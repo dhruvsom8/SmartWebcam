@@ -186,16 +186,7 @@ def speech_listener():
 init_db()
 init_speech_db()
 
-# Camera & ML setup
-camera = cv2.VideoCapture(0)
-DETECT_WIDTH, DETECT_HEIGHT = 320, 240
-DISPLAY_WIDTH, DISPLAY_HEIGHT = 640, 480
-camera.set(cv2.CAP_PROP_FRAME_WIDTH, DISPLAY_WIDTH)
-camera.set(cv2.CAP_PROP_FRAME_HEIGHT, DISPLAY_HEIGHT)
-
-face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
-smile_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_smile.xml')
-eye_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_eye.xml')
+# No server-side camera — camera runs in the browser, frames are sent via /process-frame
 
 def _download_model(url):
     return urllib.request.urlopen(url).read()
@@ -279,70 +270,54 @@ def filter_cartoon(frame):
     color = cv2.bilateralFilter(frame, 9, 300, 300)
     return cv2.bitwise_and(color, color, mask=edges)
 
-def generate_frames():
-    global face_detected, expression, gesture, current_filter, attendance_status, current_speech_text
-    global present_count, absent_count
-    
-    today_str = date.today().isoformat()
-    
-    while True:
-        success, frame = camera.read()
-        if not success:
-            break
-        frame = cv2.flip(frame, 1)
-        h, w, _ = frame.shape
-        
-        # Convert to RGB for MediaPipe
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
+def process_frame_data(frame):
+    """Core processing: receives OpenCV BGR frame, updates global state."""
+    global face_detected, expression, gesture, attendance_status, present_count, absent_count
 
-        # 1. Process Face Mesh for Expression
-        face_results = face_mesh.detect(mp_image)
+    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
 
-        if face_results.face_landmarks:
-            face_detected = True
-            landmarks = face_results.face_landmarks[0]
-
-            mouth_width = math.dist([landmarks[61].x, landmarks[61].y], [landmarks[291].x, landmarks[291].y])
-            mouth_height = math.dist([landmarks[13].x, landmarks[13].y], [landmarks[14].x, landmarks[14].y])
-
-            if mouth_width > 0.08:
-                expression = "Happy 😊"
-            elif mouth_height > 0.03:
-                expression = "Surprised 😲"
-            else:
-                expression = "Neutral 😐"
+    # 1. Face expression detection
+    face_results = face_mesh.detect(mp_image)
+    if face_results.face_landmarks:
+        face_detected = True
+        landmarks = face_results.face_landmarks[0]
+        mouth_width = math.dist([landmarks[61].x, landmarks[61].y], [landmarks[291].x, landmarks[291].y])
+        mouth_height = math.dist([landmarks[13].x, landmarks[13].y], [landmarks[14].x, landmarks[14].y])
+        if mouth_width > 0.08:
+            expression = "Happy 😊"
+        elif mouth_height > 0.03:
+            expression = "Surprised 😲"
         else:
-            face_detected = False
-            expression = "None"
+            expression = "Neutral 😐"
+    else:
+        face_detected = False
+        expression = "None"
 
-        # 2. Attendance Logic (Same as before)
-        new_status = "Present" if face_detected else "Absent"
-        if new_status == "Present":
-            present_count += 1
-        else:
-            absent_count += 1
-            
-        if absent_count >= 5000 and attendance_status != LOCKED_ABSENT:
-            set_attendance(CURRENT_USERID, "Absent")
-            attendance_status = LOCKED_ABSENT
-        elif new_status != attendance_status and attendance_status != LOCKED_ABSENT:
-            updated = set_attendance(CURRENT_USERID, new_status)
-            if updated:
-                attendance_status = new_status
+    # 2. Attendance logic
+    new_status = "Present" if face_detected else "Absent"
+    if new_status == "Present":
+        present_count += 1
+    else:
+        absent_count += 1
 
-        # 3. Hand Gesture Detection
-        hand_results = hands.detect(mp_image)
-        if hand_results.hand_landmarks:
-            for hand_landmarks, handedness in zip(hand_results.hand_landmarks, hand_results.handedness):
-                gesture = detect_gesture(hand_landmarks, handedness[0].category_name)
+    if absent_count >= 5000 and attendance_status != LOCKED_ABSENT:
+        set_attendance(CURRENT_USERID, "Absent")
+        attendance_status = LOCKED_ABSENT
+    elif new_status != attendance_status and attendance_status != LOCKED_ABSENT:
+        updated = set_attendance(CURRENT_USERID, new_status)
+        if updated:
+            attendance_status = new_status
 
-        # 4. Apply Filters & UI Overlay
-        # ... (keep your existing filter and putText logic here) ...
+    # 3. Hand gesture detection
+    hand_results = hands.detect(mp_image)
+    if hand_results.hand_landmarks:
+        for hand_landmarks, handedness in zip(hand_results.hand_landmarks, hand_results.handedness):
+            gesture = detect_gesture(hand_landmarks, handedness[0].category_name)
 
-        _, buffer = cv2.imencode('.jpg', frame)
-        yield (b'--frame\r\n'
-               b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+# --- REMOVED: generate_frames() used cv2.VideoCapture(0) which is unavailable on Render.
+# Camera now runs in the browser; frames are sent to /process-frame via fetch().
+    pass  # body removed — camera runs in browser
 
 # Routes
 @app.route('/')
@@ -558,9 +533,36 @@ def dashboard():
         return redirect('/login')
     return render_template('index.html')
 
-@app.route('/video')
-def video():
-    return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
+@app.route('/process-frame', methods=['POST'])
+def process_frame():
+    """Receive a base64 JPEG frame from the browser, run ML processing, return JSON results."""
+    import base64
+    try:
+        data = request.get_json(force=True)
+        if not data or 'frame' not in data:
+            return jsonify({'error': 'No frame data'}), 400
+
+        # Decode base64 → numpy array
+        img_data = data['frame']
+        if ',' in img_data:
+            img_data = img_data.split(',', 1)[1]
+        img_bytes = base64.b64decode(img_data)
+        np_arr = np.frombuffer(img_bytes, np.uint8)
+        frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+
+        if frame is None:
+            return jsonify({'error': 'Invalid image'}), 400
+
+        process_frame_data(frame)
+
+        return jsonify({
+            'face': face_detected,
+            'expression': expression,
+            'gesture': gesture,
+            'attendance': attendance_status,
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/status')
 def status():

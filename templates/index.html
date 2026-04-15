@@ -443,7 +443,8 @@
                     <h1>📹 Live Camera Feed</h1>
                 </div>
                 <div class="video-live connected" id="liveIndicator" style="height: 30px; width: 120px; font-size: 10px;">🟢 LIVE</div>
-                <img id="video-feed" src="/video" alt="Live Video" class="video-feed">
+                <video id="video-feed" class="video-feed" autoplay playsinline muted style="width:96%;margin-left:15px;margin-top:5px;margin-bottom:5px;height:auto;max-height:60vh;object-fit:cover;display:block;border-radius:25px;background:#000;"></video>
+                <canvas id="capture-canvas" style="display:none;"></canvas>
                 <div class="status-bar" id="statusBar">
                     <div class="status-item" style="height:70px; width: 140px; ">
                         <div class="status-value" id="attendanceStatus">Absent</div>
@@ -519,10 +520,55 @@
         let currentFilter = 'normal';
         let isListening = false;
 
+        // --- Browser Camera Setup ---
+        const videoEl = document.getElementById('video-feed');
+        const canvas = document.getElementById('capture-canvas');
+        const ctx = canvas.getContext('2d');
+
+        async function startCamera() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+                videoEl.srcObject = stream;
+                updateLiveStatus('🟢 LIVE', true);
+                startFrameLoop();
+            } catch (err) {
+                updateLiveStatus('🔴 Camera denied', false);
+                console.warn('Camera error:', err);
+            }
+        }
+
+        function captureFrame() {
+            canvas.width = videoEl.videoWidth || 640;
+            canvas.height = videoEl.videoHeight || 480;
+            ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
+            return canvas.toDataURL('image/jpeg', 0.7);
+        }
+
+        function startFrameLoop() {
+            setInterval(() => {
+                if (videoEl.readyState >= 2) {
+                    const frameData = captureFrame();
+                    fetch('/process-frame', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ frame: frameData })
+                    })
+                    .then(r => r.json())
+                    .then(data => {
+                        if (data.attendance) document.getElementById('attendanceStatus').textContent = data.attendance;
+                        if (data.expression) document.getElementById('expressionStatus').textContent = data.expression;
+                        if (data.gesture) document.getElementById('gestures').textContent = data.gesture;
+                    })
+                    .catch(err => console.warn('Frame error:', err));
+                }
+            }, 1500); // send a frame every 1.5s
+        }
+
+        startCamera();
+
         // Socket Events
         socket.on('connect', () => {
             console.log('✅ Connected!');
-            updateLiveStatus('🟢 LIVE', true);
             addMessage('System', 'Connected to AI Attendance System ✅', 'ai');
         });
 
