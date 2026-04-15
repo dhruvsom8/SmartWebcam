@@ -194,25 +194,65 @@ def _download_model(url):
 _HAND_MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task'
 _FACE_MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task'
 
-_hand_opts = mp_vision.HandLandmarkerOptions(
-    base_options=mp_python.BaseOptions(model_asset_buffer=_download_model(_HAND_MODEL_URL)),
-    num_hands=2,
-    min_hand_detection_confidence=0.7,
-    min_tracking_confidence=0.5,
-    running_mode=mp_vision.RunningMode.IMAGE
-)
+_hand_opts = None
+_face_opts = None
+face_mesh = None
+hands = None
 
-_face_opts = mp_vision.FaceLandmarkerOptions(
-    base_options=mp_python.BaseOptions(model_asset_buffer=_download_model(_FACE_MODEL_URL)),
-    num_faces=1,
-    min_face_detection_confidence=0.5,
-    min_tracking_confidence=0.5,
-    output_face_blendshapes=False,
-    running_mode=mp_vision.RunningMode.IMAGE
-)
+def _get_hand_opts():
+    global _hand_opts
+    if _hand_opts is None:
+        try:
+            _hand_opts = mp_vision.HandLandmarkerOptions(
+                base_options=mp_python.BaseOptions(model_asset_buffer=_download_model(_HAND_MODEL_URL)),
+                num_hands=2,
+                min_hand_detection_confidence=0.7,
+                min_tracking_confidence=0.5,
+                running_mode=mp_vision.RunningMode.IMAGE
+            )
+        except Exception as e:
+            print(f"⚠️ HandLandmarker options failed: {e}")
+    return _hand_opts
 
-face_mesh = mp_vision.FaceLandmarker.create_from_options(_face_opts)
-hands = mp_vision.HandLandmarker.create_from_options(_hand_opts)
+def _get_face_opts():
+    global _face_opts
+    if _face_opts is None:
+        try:
+            _face_opts = mp_vision.FaceLandmarkerOptions(
+                base_options=mp_python.BaseOptions(model_asset_buffer=_download_model(_FACE_MODEL_URL)),
+                num_faces=1,
+                min_face_detection_confidence=0.5,
+                min_tracking_confidence=0.5,
+                output_face_blendshapes=False,
+                running_mode=mp_vision.RunningMode.IMAGE
+            )
+        except Exception as e:
+            print(f"⚠️ FaceLandmarker options failed: {e}")
+    return _face_opts
+
+def get_face_mesh():
+    global face_mesh
+    if face_mesh is None:
+        try:
+            opts = _get_face_opts()
+            if opts:
+                face_mesh = mp_vision.FaceLandmarker.create_from_options(opts)
+        except Exception as e:
+            print(f"⚠️ FaceLandmarker init failed: {e}")
+            face_mesh = None
+    return face_mesh
+
+def get_hands():
+    global hands
+    if hands is None:
+        try:
+            opts = _get_hand_opts()
+            if opts:
+                hands = mp_vision.HandLandmarker.create_from_options(opts)
+        except Exception as e:
+            print(f"⚠️ HandLandmarker init failed: {e}")
+            hands = None
+    return hands
 
 # Global state
 face_detected = False
@@ -278,21 +318,26 @@ def process_frame_data(frame):
     mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
 
     # 1. Face expression detection
-    face_results = face_mesh.detect(mp_image)
-    if face_results.face_landmarks:
-        face_detected = True
-        landmarks = face_results.face_landmarks[0]
-        mouth_width = math.dist([landmarks[61].x, landmarks[61].y], [landmarks[291].x, landmarks[291].y])
-        mouth_height = math.dist([landmarks[13].x, landmarks[13].y], [landmarks[14].x, landmarks[14].y])
-        if mouth_width > 0.08:
-            expression = "Happy 😊"
-        elif mouth_height > 0.03:
-            expression = "Surprised 😲"
+    _face_mesh = get_face_mesh()
+    if _face_mesh:
+        face_results = _face_mesh.detect(mp_image)
+        if face_results.face_landmarks:
+            face_detected = True
+            landmarks = face_results.face_landmarks[0]
+            mouth_width = math.dist([landmarks[61].x, landmarks[61].y], [landmarks[291].x, landmarks[291].y])
+            mouth_height = math.dist([landmarks[13].x, landmarks[13].y], [landmarks[14].x, landmarks[14].y])
+            if mouth_width > 0.08:
+                expression = "Happy 😊"
+            elif mouth_height > 0.03:
+                expression = "Surprised 😲"
+            else:
+                expression = "Neutral 😐"
         else:
-            expression = "Neutral 😐"
+            face_detected = False
+            expression = "None"
     else:
         face_detected = False
-        expression = "None"
+        expression = "Unavailable"
 
     # 2. Attendance logic
     new_status = "Present" if face_detected else "Absent"
@@ -310,10 +355,12 @@ def process_frame_data(frame):
             attendance_status = new_status
 
     # 3. Hand gesture detection
-    hand_results = hands.detect(mp_image)
-    if hand_results.hand_landmarks:
-        for hand_landmarks, handedness in zip(hand_results.hand_landmarks, hand_results.handedness):
-            gesture = detect_gesture(hand_landmarks, handedness[0].category_name)
+    _hands = get_hands()
+    if _hands:
+        hand_results = _hands.detect(mp_image)
+        if hand_results.hand_landmarks:
+            for hand_landmarks, handedness in zip(hand_results.hand_landmarks, hand_results.handedness):
+                gesture = detect_gesture(hand_landmarks, handedness[0].category_name)
 
 # --- REMOVED: generate_frames() used cv2.VideoCapture(0) which is unavailable on Render.
 # Camera now runs in the browser; frames are sent to /process-frame via fetch().
