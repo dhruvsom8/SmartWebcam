@@ -21,6 +21,7 @@ import ssl
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import urllib.request
+from flask_cors import CORS
 from dotenv import load_dotenv
 
 load_dotenv(override=False)  # System env vars (e.g. Render dashboard) take precedence over .env
