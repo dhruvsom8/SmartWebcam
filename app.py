@@ -23,11 +23,14 @@ from email.mime.multipart import MIMEMultipart
 import urllib.request
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(override=False)  # System env vars (e.g. Render dashboard) take precedence over .env
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 if not GROQ_API_KEY:
-    raise EnvironmentError("GROQ_API_KEY is missing. Please set it in your .env file.")
+    raise EnvironmentError(
+        "GROQ_API_KEY is missing. "
+        "Set it in your .env file (local) or in the Render dashboard under Environment Variables."
+    )
 
 client = Groq(api_key=GROQ_API_KEY)
 otp_storage = {}
@@ -653,4 +656,5 @@ if __name__ == '__main__':
     print("🚀 Smart Attendance System with OTP Started!")
     print("📧 Update OTP_SENDER_EMAIL and OTP_SENDER_PASSWORD first!")
     print("🌐 Login: http://localhost:5000/login")
-    socketio.run(app, debug=True, host='0.0.0.0', port=5000)
+    port = int(os.environ.get("PORT", 5000))
+    socketio.run(app, debug=False, host='0.0.0.0', port=port)
