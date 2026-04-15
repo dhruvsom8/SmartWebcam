@@ -2,7 +2,7 @@ services:
   - type: web
     name: smartwebcam
     env: python
-    startCommand: gunicorn app:app --workers 1 --threads 2 --timeout 120
+    startCommand: gunicorn app:app --workers 1 --threads 4 --timeout 120
     envVars:
       - key: PORT
         value: 10000
